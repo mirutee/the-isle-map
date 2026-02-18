@@ -99,6 +99,25 @@
         .status-ready { background: #002200; color: var(--primary); border: 1px solid var(--primary); }
         .status-error { background: #220000; color: var(--danger); border: 1px solid var(--danger); }
         .status-linked { background: var(--primary); color: #000; border: 1px solid var(--primary); font-weight: bold; }
+
+        #chat-section { display: none; flex-direction: column; flex-grow: 1; min-height: 0; }
+        #chat-section.active { display: flex; }
+        #chat-messages {
+            flex-grow: 1; overflow-y: auto; background: #0d0d0d; padding: 8px;
+            font-size: 12px; border: 1px solid #333; min-height: 80px;
+        }
+        .chat-msg { padding: 3px 0; word-wrap: break-word; }
+        .chat-msg .chat-name { font-weight: bold; font-size: 11px; }
+        .chat-msg .chat-text { color: #ccc; }
+        .chat-me .chat-name { color: var(--primary); }
+        .chat-other .chat-name { color: var(--warning); }
+        #chat-input-row { display: flex; gap: 4px; margin-top: 5px; }
+        #chat-input-row input {
+            flex-grow: 1; margin: 0; padding: 8px; font-size: 12px;
+        }
+        #chat-input-row button {
+            width: auto; margin: 0; padding: 8px 12px; font-size: 11px;
+        }
     </style>
 </head>
 <body>
@@ -163,7 +182,15 @@
             </div>
         </div>
         <div id="sidebar-right">
-            <h3 id="lang-label-log" style="font-size: 0.8em; color: var(--primary);">LOG</h3>
+            <div id="chat-section">
+                <h3 id="lang-label-chat" style="font-size: 0.8em; color: var(--primary); margin: 0 0 5px 0;">CHAT</h3>
+                <div id="chat-messages"></div>
+                <div id="chat-input-row">
+                    <input type="text" id="chat-input" placeholder="Mensagem..." maxlength="200" onkeydown="if(event.key==='Enter')sendChat()">
+                    <button onclick="sendChat()">&gt;</button>
+                </div>
+            </div>
+            <h3 id="lang-label-log" style="font-size: 0.8em; color: var(--primary); margin-top: 10px;">LOG</h3>
             <div id="log-container"></div>
             <button id="lang-btn-reset" onclick="resetPath()" style="font-size: 10px; border-color: #444; color: #888; margin-top: 10px;">LIMPAR RASTROS</button>
         </div>
@@ -204,7 +231,8 @@
             peerLeft: "Parceiro saiu.",
             leftRoom: "Saiu da sala.",
             connOk: "Conectado ao servidor!",
-            connFail: "Falha na conexão. Tentando reconectar..."
+            connFail: "Falha na conexão. Tentando reconectar...",
+            labelChat: "CHAT", chatPlaceholder: "Mensagem..."
         },
         en: {
             welcome: "The Isle Map", welcomeHint: "Enter your name to continue:",
@@ -227,7 +255,8 @@
             peerLeft: "Partner left.",
             leftRoom: "Left the room.",
             connOk: "Connected to server!",
-            connFail: "Connection failed. Retrying..."
+            connFail: "Connection failed. Retrying...",
+            labelChat: "CHAT", chatPlaceholder: "Message..."
         }
     };
 
@@ -246,24 +275,28 @@
     function updateStatus() {
         var el = document.getElementById('conn-status');
         var btn = document.getElementById('btn-connect');
+        var chat = document.getElementById('chat-section');
         if (currentRoom && partnerOnline) {
             el.textContent = t().statusLinked;
             el.className = 'status-linked';
             btn.innerText = t().btnLeave;
             btn.classList.add('connected-active');
             btn.disabled = false;
+            chat.classList.add('active');
         } else if (currentRoom) {
             el.textContent = t().statusWaiting;
             el.className = 'status-waiting';
             btn.innerText = t().btnLeave;
             btn.classList.remove('connected-active');
             btn.disabled = false;
+            chat.classList.remove('active');
         } else {
             el.textContent = t().statusReady;
             el.className = 'status-ready';
             btn.innerText = t().btnJoin;
             btn.classList.remove('connected-active');
             btn.disabled = false;
+            chat.classList.remove('active');
         }
     }
 
@@ -285,6 +318,8 @@
         document.getElementById('lang-btn-reset').innerText = l.btnReset;
         document.getElementById('local-label').innerText = myName || l.you;
         document.getElementById('room-id').placeholder = l.roomPlaceholder;
+        document.getElementById('lang-label-chat').innerText = l.labelChat;
+        document.getElementById('chat-input').placeholder = l.chatPlaceholder;
         if (!remoteLastCoords) document.getElementById('dist-val').innerText = l.offline;
         calculateTacticalNav();
         updateStatus();
@@ -403,6 +438,9 @@
                     remoteLastCoords = { lat: d.lat, lng: d.lng };
                     renderPlayer('remote', d.lat, d.lng, d.name, d.style, d.isNewPos);
                     if (d.isNewPos) calculateTacticalNav();
+                } else if (d.type === 'chat') {
+                    markPartnerOnline();
+                    appendChat(d.name || '???', d.text, false);
                 }
             });
 
@@ -444,6 +482,7 @@
         document.getElementById('nav-lat').innerText = '--';
         document.getElementById('nav-lng').innerText = '--';
 
+        document.getElementById('chat-messages').innerHTML = '';
         addLog('SYSTEM', t().leftRoom);
         updateStatus();
     }
@@ -477,6 +516,29 @@
                 name: myName, style: getMyStyle(), isNewPos: isNew
             });
         }
+    }
+
+    // ===== Chat =====
+    function sendChat() {
+        var input = document.getElementById('chat-input');
+        var text = input.value.trim();
+        if (!text || !currentRoom) return;
+        input.value = '';
+        appendChat(myName, text, true);
+        ntfyPublish('theislemap-' + currentRoom, { type: 'chat', name: myName, text: text });
+    }
+
+    function appendChat(name, text, isMe) {
+        var c = document.getElementById('chat-messages');
+        var d = document.createElement('div');
+        d.className = 'chat-msg ' + (isMe ? 'chat-me' : 'chat-other');
+        d.innerHTML = '<span class="chat-name">' + escapeHtml(name) + ':</span> <span class="chat-text">' + escapeHtml(text) + '</span>';
+        c.appendChild(d);
+        c.scrollTop = c.scrollHeight;
+    }
+
+    function escapeHtml(s) {
+        return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
     }
 
     // ===== Coordenadas =====
