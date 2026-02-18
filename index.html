@@ -140,9 +140,15 @@
             </div>
             <div class="menu-item">
                 <label id="lang-label-conn">CONEXÃO:</label>
-                <input type="text" id="room-id" placeholder="Ex: SALA1" maxlength="20" style="text-transform:uppercase;">
-                <button id="btn-connect" onclick="joinRoom()">ENTRAR NA SALA</button>
-                <div id="conn-status" class="status-ready">Pronto. Digite um nome de sala.</div>
+                <label id="lang-label-myid" style="font-size:10px; color:#666; margin-top:5px;">SUA SESSÃO:</label>
+                <div style="display:flex; gap:4px; align-items:center;">
+                    <input type="text" id="my-session-id" readonly style="font-family:monospace; font-size:14px; letter-spacing:2px; text-align:center; color:var(--primary); cursor:pointer;" onclick="copySessionId()" title="Clique para copiar">
+                    <button onclick="copySessionId()" style="width:auto; padding:10px 12px; font-size:11px;" id="btn-copy">📋</button>
+                </div>
+                <label id="lang-label-partnerid" style="font-size:10px; color:#666; margin-top:8px;">ID DO PARCEIRO:</label>
+                <input type="text" id="partner-id" placeholder="Cole o ID do parceiro" maxlength="10" style="text-transform:uppercase; font-family:monospace; letter-spacing:2px; text-align:center;">
+                <button id="btn-connect" onclick="joinRoom()">CONECTAR</button>
+                <div id="conn-status" class="status-ready">Compartilhe seu ID com o parceiro.</div>
             </div>
             <div class="menu-item">
                 <label id="lang-label-coord">COORDENADAS:</label>
@@ -206,6 +212,7 @@
     var currentLang = 'pt';
     var MAP_LIMITS = { latTop: -618, latBottom: 616, lngLeft: -560, lngRight: 674 };
     var myId = 'u' + Math.random().toString(36).substring(2, 10);
+    var sessionId = Math.random().toString(36).substring(2, 7).toUpperCase();
     var NTFY = 'https://ntfy.sh';
 
     // ===== i18n =====
@@ -213,49 +220,53 @@
         pt: {
             welcome: "The Isle Map", welcomeHint: "Digite seu nome para continuar:",
             loginBtn: "ENTRAR", labelLang: "IDIOMA:",
-            labelConn: "CONEXÃO:", btnJoin: "ENTRAR NA SALA", btnLeave: "SAIR DA SALA",
+            labelConn: "CONEXÃO:", labelMyId: "SUA SESSÃO:", labelPartnerId: "ID DO PARCEIRO:",
+            btnConnect: "CONECTAR", btnDisconnect: "DESCONECTAR",
             labelCoord: "COORDENADAS:", btnSend: "ENVIAR POSIÇÃO", labelNav: "ORIENTAÇÃO TÁTICA",
             labelStyle: "ESTILO:", labelBlink: "Piscar Marcador", labelLog: "LOG TÁTICO",
             btnReset: "LIMPAR RASTROS", offline: "OFFLINE", units: " UNIDADES",
             latStable: "NÍVEL ESTÁVEL", latDown: "DESÇA MAIS (AMIGO ABAIXO)", latUp: "SUBA MAIS (AMIGO ACIMA)",
             lngStable: "EIXO ALINHADO", lngRight: "VÁ PARA DIREITA", lngLeft: "VÁ PARA ESQUERDA",
             you: "VOCÊ",
-            statusReady: "Pronto. Digite um nome de sala.",
-            statusWaiting: "Na sala. Aguardando parceiro...",
+            statusReady: "Compartilhe seu ID com o parceiro.",
+            statusWaiting: "Conectando. Aguardando parceiro...",
             statusLinked: "Conectado com parceiro!",
             statusError: "Erro de conexão.",
-            roomPlaceholder: "Ex: SALA1",
-            enterRoom: "Digite o nome da sala.",
-            roomJoined: "Entrou na sala: ",
-            peerJoined: "Parceiro na sala!",
+            partnerPlaceholder: "Cole o ID do parceiro",
+            enterPartner: "Cole o ID do parceiro para conectar.",
+            connected: "Conectado na sessão!",
+            peerJoined: "Parceiro conectou!",
             peerLeft: "Parceiro saiu.",
-            leftRoom: "Saiu da sala.",
+            disconnected: "Desconectado.",
             connOk: "Conectado ao servidor!",
             connFail: "Falha na conexão. Tentando reconectar...",
+            copied: "ID copiado!",
             labelChat: "CHAT", chatPlaceholder: "Mensagem..."
         },
         en: {
             welcome: "The Isle Map", welcomeHint: "Enter your name to continue:",
             loginBtn: "ENTER", labelLang: "LANGUAGE:",
-            labelConn: "CONNECTION:", btnJoin: "JOIN ROOM", btnLeave: "LEAVE ROOM",
+            labelConn: "CONNECTION:", labelMyId: "YOUR SESSION:", labelPartnerId: "PARTNER ID:",
+            btnConnect: "CONNECT", btnDisconnect: "DISCONNECT",
             labelCoord: "COORDINATES:", btnSend: "SEND POSITION", labelNav: "TACTICAL GUIDANCE",
             labelStyle: "STYLE:", labelBlink: "Blink Marker", labelLog: "TACTICAL LOG",
             btnReset: "CLEAR TRACKS", offline: "OFFLINE", units: " UNITS",
             latStable: "LEVEL STABLE", latDown: "GO DOWN (FRIEND BELOW)", latUp: "GO UP (FRIEND ABOVE)",
             lngStable: "AXIS ALIGNED", lngRight: "GO RIGHT", lngLeft: "GO LEFT",
             you: "YOU",
-            statusReady: "Ready. Enter a room name.",
-            statusWaiting: "In room. Waiting for partner...",
+            statusReady: "Share your ID with your partner.",
+            statusWaiting: "Connecting. Waiting for partner...",
             statusLinked: "Connected with partner!",
             statusError: "Connection error.",
-            roomPlaceholder: "Ex: ROOM1",
-            enterRoom: "Enter a room name.",
-            roomJoined: "Joined room: ",
-            peerJoined: "Partner in room!",
+            partnerPlaceholder: "Paste partner's ID",
+            enterPartner: "Paste your partner's ID to connect.",
+            connected: "Connected to session!",
+            peerJoined: "Partner connected!",
             peerLeft: "Partner left.",
-            leftRoom: "Left the room.",
+            disconnected: "Disconnected.",
             connOk: "Connected to server!",
             connFail: "Connection failed. Retrying...",
+            copied: "ID copied!",
             labelChat: "CHAT", chatPlaceholder: "Message..."
         }
     };
@@ -279,21 +290,21 @@
         if (currentRoom && partnerOnline) {
             el.textContent = t().statusLinked;
             el.className = 'status-linked';
-            btn.innerText = t().btnLeave;
+            btn.innerText = t().btnDisconnect;
             btn.classList.add('connected-active');
             btn.disabled = false;
             chat.classList.add('active');
         } else if (currentRoom) {
             el.textContent = t().statusWaiting;
             el.className = 'status-waiting';
-            btn.innerText = t().btnLeave;
+            btn.innerText = t().btnDisconnect;
             btn.classList.remove('connected-active');
             btn.disabled = false;
             chat.classList.remove('active');
         } else {
             el.textContent = t().statusReady;
             el.className = 'status-ready';
-            btn.innerText = t().btnJoin;
+            btn.innerText = t().btnConnect;
             btn.classList.remove('connected-active');
             btn.disabled = false;
             chat.classList.remove('active');
@@ -309,6 +320,8 @@
         document.getElementById('lang-login-btn').innerText = l.loginBtn;
         document.getElementById('lang-label-lang').innerText = l.labelLang;
         document.getElementById('lang-label-conn').innerText = l.labelConn;
+        document.getElementById('lang-label-myid').innerText = l.labelMyId;
+        document.getElementById('lang-label-partnerid').innerText = l.labelPartnerId;
         document.getElementById('lang-label-coord').innerText = l.labelCoord;
         document.getElementById('lang-btn-send').innerText = l.btnSend;
         document.getElementById('lang-label-nav').innerText = l.labelNav;
@@ -317,7 +330,7 @@
         document.getElementById('lang-label-log').innerText = l.labelLog;
         document.getElementById('lang-btn-reset').innerText = l.btnReset;
         document.getElementById('local-label').innerText = myName || l.you;
-        document.getElementById('room-id').placeholder = l.roomPlaceholder;
+        document.getElementById('partner-id').placeholder = l.partnerPlaceholder;
         document.getElementById('lang-label-chat').innerText = l.labelChat;
         document.getElementById('chat-input').placeholder = l.chatPlaceholder;
         if (!remoteLastCoords) document.getElementById('dist-val').innerText = l.offline;
@@ -376,21 +389,32 @@
         } catch (ex) {}
     }
 
+    var sseErrorCount = 0;
+
     function startSSE(topic, onMessage) {
         messageHandler = onMessage;
         currentTopic = topic;
+        sseErrorCount = 0;
         var url = NTFY + '/' + topic + '/sse';
         eventSource = new EventSource(url);
 
         eventSource.addEventListener('message', function(e) {
+            sseErrorCount = 0; // Reset on successful message
             try {
                 handleEnvelope(JSON.parse(e.data));
             } catch (ex) {}
         });
 
+        eventSource.addEventListener('open', function() {
+            sseErrorCount = 0;
+            addLog('SYSTEM', t().connOk);
+        });
+
         eventSource.addEventListener('error', function() {
-            // SSE falhou, cair para polling
-            if (eventSource) {
+            sseErrorCount++;
+            // Only fallback to polling after 3 consecutive errors
+            // EventSource reconnects automatically, so single errors are normal
+            if (sseErrorCount >= 3 && eventSource) {
                 eventSource.close();
                 eventSource = null;
                 addLog('SYSTEM', 'SSE indisponivel, usando polling...');
@@ -435,20 +459,35 @@
         currentTopic = null;
     }
 
-    // ===== Sala =====
+    // ===== Sessão =====
+    function copySessionId() {
+        navigator.clipboard.writeText(sessionId).then(function() {
+            var el = document.getElementById('conn-status');
+            var prev = el.textContent;
+            var prevClass = el.className;
+            el.textContent = t().copied;
+            el.className = 'status-linked';
+            setTimeout(function() { if (!currentRoom) { el.textContent = prev; el.className = prevClass; } }, 1500);
+        });
+    }
+
+    function getSharedTopic(id1, id2) {
+        var sorted = [id1.toUpperCase(), id2.toUpperCase()].sort();
+        return 'tilemap-' + sorted[0] + '-' + sorted[1];
+    }
+
     function joinRoom() {
         if (currentRoom) { leaveRoom(); return; }
 
-        var name = document.getElementById('room-id').value.trim().toUpperCase();
-        if (!name) { addLog('SYSTEM', t().enterRoom); return; }
+        var partnerId = document.getElementById('partner-id').value.trim().toUpperCase();
+        if (!partnerId) { addLog('SYSTEM', t().enterPartner); return; }
 
-        currentRoom = name;
-        document.getElementById('room-id').disabled = true;
+        var topic = getSharedTopic(sessionId, partnerId);
+        currentRoom = topic;
+        document.getElementById('partner-id').disabled = true;
         document.getElementById('btn-connect').disabled = true;
 
-        var topic = 'theislemap-' + name;
-
-        addLog('SYSTEM', t().roomJoined + name);
+        addLog('SYSTEM', t().connected);
 
         function onMsg(d) {
             if (d.id === myId) return;
@@ -477,7 +516,7 @@
         // Anunciar entrada
         ntfyPublish(topic, { type: 'join' });
 
-        // Ping a cada 15s (reduzido para economizar rate limit)
+        // Ping a cada 15s
         pingInterval = setInterval(function() {
             ntfyPublish(topic, { type: 'ping' });
         }, 15000);
@@ -492,12 +531,12 @@
         stopListening();
 
         if (currentRoom) {
-            ntfyPublish('theislemap-' + currentRoom, { type: 'leave' });
+            ntfyPublish(currentRoom, { type: 'leave' });
         }
 
         partnerOnline = false;
         currentRoom = null;
-        document.getElementById('room-id').disabled = false;
+        document.getElementById('partner-id').disabled = false;
         document.getElementById('remote-dot').style.display = 'none';
         remoteLastCoords = null;
         document.getElementById('dist-val').innerText = t().offline;
@@ -505,7 +544,7 @@
         document.getElementById('nav-lng').innerText = '--';
 
         document.getElementById('chat-messages').innerHTML = '';
-        addLog('SYSTEM', t().leftRoom);
+        addLog('SYSTEM', t().disconnected);
         updateStatus();
     }
 
@@ -532,7 +571,7 @@
 
     function sendMyData(isNew) {
         if (myLastCoords && currentRoom) {
-            ntfyPublish('theislemap-' + currentRoom, {
+            ntfyPublish(currentRoom, {
                 type: 'pos',
                 lat: myLastCoords.lat, lng: myLastCoords.lng,
                 name: myName, style: getMyStyle(), isNewPos: isNew
@@ -547,7 +586,7 @@
         if (!text || !currentRoom) return;
         input.value = '';
         appendChat(myName, text, true);
-        ntfyPublish('theislemap-' + currentRoom, { type: 'chat', name: myName, text: text });
+        ntfyPublish(currentRoom, { type: 'chat', name: myName, text: text });
     }
 
     function appendChat(name, text, isMe) {
@@ -637,13 +676,14 @@
     window.addEventListener('beforeunload', function() {
         if (currentRoom) {
             // Envio síncrono antes de fechar
-            navigator.sendBeacon(NTFY + '/' + 'theislemap-' + currentRoom, JSON.stringify({ type: 'leave', id: myId }));
+            navigator.sendBeacon(NTFY + '/' + currentRoom, JSON.stringify({ type: 'leave', id: myId }));
         }
     });
 
     // ===== Init =====
+    document.getElementById('my-session-id').value = sessionId;
     changeLanguage();
-    addLog('SYSTEM', 'ID: ' + myId);
+    addLog('SYSTEM', currentLang === 'pt' ? 'Sua sessão: ' + sessionId : 'Your session: ' + sessionId);
     addLog('SYSTEM', currentLang === 'pt' ? 'Sistema pronto.' : 'System ready.');
 </script>
 </body>
