@@ -119,6 +119,7 @@
             width: auto; margin: 0; padding: 8px 12px; font-size: 11px;
         }
     </style>
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
 </head>
 <body>
     <div id="name-overlay">
@@ -211,9 +212,9 @@
     var myPoints = [], remotePoints = [];
     var currentLang = 'pt';
     var MAP_LIMITS = { latTop: -618, latBottom: 616, lngLeft: -560, lngRight: 674 };
-    var myId = 'u' + Math.random().toString(36).substring(2, 10);
     var sessionId = Math.random().toString(36).substring(2, 7).toUpperCase();
-    var NTFY = 'https://ntfy.sh';
+    var peer = null;
+    var conn = null;
 
     // ===== i18n =====
     var i18n = {
@@ -361,105 +362,13 @@
         document.getElementById('name-overlay').style.display = 'none';
     }
 
-    // ===== Ntfy.sh - publicar mensagem via HTTPS POST =====
-    function ntfyPublish(topic, data) {
-        data.id = myId;
-        fetch(NTFY + '/' + topic, {
-            method: 'POST',
-            body: JSON.stringify(data)
-        }).catch(function(e) {
-            console.error('Publish error:', e);
-        });
-    }
-
-    // ===== Ntfy.sh - receber via SSE (EventSource) com fallback polling =====
-    var eventSource = null;
-    var pollTimer = null;
-    var lastPollTime = 0;
-    var currentTopic = null;
-    var messageHandler = null;
-
-    function handleEnvelope(envelope) {
-        if (!messageHandler) return;
-        try {
-            if (envelope.event === 'message' && envelope.message) {
-                var data = JSON.parse(envelope.message);
-                messageHandler(data);
-            }
-        } catch (ex) {}
-    }
-
-    var sseErrorCount = 0;
-
-    function startSSE(topic, onMessage) {
-        messageHandler = onMessage;
-        currentTopic = topic;
-        sseErrorCount = 0;
-        var url = NTFY + '/' + topic + '/sse';
-        eventSource = new EventSource(url);
-
-        eventSource.addEventListener('message', function(e) {
-            sseErrorCount = 0; // Reset on successful message
-            try {
-                handleEnvelope(JSON.parse(e.data));
-            } catch (ex) {}
-        });
-
-        eventSource.addEventListener('open', function() {
-            sseErrorCount = 0;
-            addLog('SYSTEM', t().connOk);
-        });
-
-        eventSource.addEventListener('error', function() {
-            sseErrorCount++;
-            // Only fallback to polling after 3 consecutive errors
-            // EventSource reconnects automatically, so single errors are normal
-            if (sseErrorCount >= 3 && eventSource) {
-                eventSource.close();
-                eventSource = null;
-                addLog('SYSTEM', 'SSE indisponivel, usando polling...');
-                startPolling(topic, onMessage);
-            }
-        });
-    }
-
-    function startPolling(topic, onMessage) {
-        messageHandler = onMessage;
-        currentTopic = topic;
-        lastPollTime = Math.floor(Date.now() / 1000);
-
-        function poll() {
-            if (!currentRoom) return;
-            fetch(NTFY + '/' + topic + '/json?poll=1&since=' + lastPollTime).then(function(r) {
-                if (!r.ok) throw new Error('HTTP ' + r.status);
-                return r.text();
-            }).then(function(text) {
-                if (!text.trim()) return;
-                var lines = text.trim().split('\n');
-                for (var i = 0; i < lines.length; i++) {
-                    try {
-                        var envelope = JSON.parse(lines[i]);
-                        if (envelope.time) lastPollTime = envelope.time + 1;
-                        handleEnvelope(envelope);
-                    } catch (ex) {}
-                }
-            }).catch(function(e) {
-                console.error('Poll error:', e);
-            });
+    // ===== PeerJS - Comunicação P2P =====
+    function sendData(data) {
+        if (conn && conn.open) {
+            conn.send(data);
         }
-
-        poll();
-        pollTimer = setInterval(poll, 2000);
     }
 
-    function stopListening() {
-        if (eventSource) { eventSource.close(); eventSource = null; }
-        if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
-        messageHandler = null;
-        currentTopic = null;
-    }
-
-    // ===== Sessão =====
     function copySessionId() {
         navigator.clipboard.writeText(sessionId).then(function() {
             var el = document.getElementById('conn-status');
@@ -471,72 +380,64 @@
         });
     }
 
-    function getSharedTopic(id1, id2) {
-        var sorted = [id1.toUpperCase(), id2.toUpperCase()].sort();
-        return 'tilemap-' + sorted[0] + '-' + sorted[1];
+    function setupConnection(c) {
+        conn = c;
+        conn.on('open', function() {
+            currentRoom = conn.peer;
+            partnerOnline = true;
+            addLog('SYSTEM', t().peerJoined);
+            updateStatus();
+            // Enviar dados atuais ao parceiro
+            if (myLastCoords) sendMyData(true);
+        });
+
+        conn.on('data', function(d) {
+            if (d.type === 'pos') {
+                partnerOnline = true;
+                remoteLastCoords = { lat: d.lat, lng: d.lng };
+                renderPlayer('remote', d.lat, d.lng, d.name, d.style, d.isNewPos);
+                if (d.isNewPos) calculateTacticalNav();
+                updateStatus();
+            } else if (d.type === 'chat') {
+                appendChat(d.name || '???', d.text, false);
+            }
+        });
+
+        conn.on('close', function() {
+            markPartnerOffline();
+            addLog('SYSTEM', t().peerLeft);
+        });
+
+        conn.on('error', function(err) {
+            addLog('SYSTEM', 'Conn error: ' + err.type);
+        });
     }
 
     function joinRoom() {
-        if (currentRoom) { leaveRoom(); return; }
+        if (currentRoom || conn) { leaveRoom(); return; }
 
         var partnerId = document.getElementById('partner-id').value.trim().toUpperCase();
         if (!partnerId) { addLog('SYSTEM', t().enterPartner); return; }
 
-        var topic = getSharedTopic(sessionId, partnerId);
-        currentRoom = topic;
         document.getElementById('partner-id').disabled = true;
         document.getElementById('btn-connect').disabled = true;
+        currentRoom = 'connecting';
 
-        addLog('SYSTEM', t().connected);
+        addLog('SYSTEM', t().statusWaiting);
 
-        function onMsg(d) {
-            if (d.id === myId) return;
-
-            if (d.type === 'join' || d.type === 'ping') {
-                if (!partnerOnline) addLog('SYSTEM', t().peerJoined);
-                markPartnerOnline();
-                if (d.type === 'join' && myLastCoords) sendMyData(true);
-            } else if (d.type === 'leave') {
-                markPartnerOffline();
-                addLog('SYSTEM', t().peerLeft);
-            } else if (d.type === 'pos') {
-                markPartnerOnline();
-                remoteLastCoords = { lat: d.lat, lng: d.lng };
-                renderPlayer('remote', d.lat, d.lng, d.name, d.style, d.isNewPos);
-                if (d.isNewPos) calculateTacticalNav();
-            } else if (d.type === 'chat') {
-                markPartnerOnline();
-                appendChat(d.name || '???', d.text, false);
-            }
-        }
-
-        // Tentar SSE primeiro (1 conexão persistente), fallback para polling
-        startSSE(topic, onMsg);
-
-        // Anunciar entrada
-        ntfyPublish(topic, { type: 'join' });
-
-        // Ping a cada 15s
-        pingInterval = setInterval(function() {
-            ntfyPublish(topic, { type: 'ping' });
-        }, 15000);
-
-        if (myLastCoords) sendMyData(true);
+        // Conectar ao peer do parceiro
+        var peerIdRemote = 'tilemap-' + partnerId;
+        var c = peer.connect(peerIdRemote, { reliable: true });
+        setupConnection(c);
         updateStatus();
     }
 
     function leaveRoom() {
-        clearInterval(pingInterval);
-        clearTimeout(partnerTimeout);
-        stopListening();
-
-        if (currentRoom) {
-            ntfyPublish(currentRoom, { type: 'leave' });
-        }
-
+        if (conn) { conn.close(); conn = null; }
         partnerOnline = false;
         currentRoom = null;
         document.getElementById('partner-id').disabled = false;
+        document.getElementById('partner-id').value = '';
         document.getElementById('remote-dot').style.display = 'none';
         remoteLastCoords = null;
         document.getElementById('dist-val').innerText = t().offline;
@@ -548,30 +449,21 @@
         updateStatus();
     }
 
-    function markPartnerOnline() {
-        partnerOnline = true;
-        clearTimeout(partnerTimeout);
-        partnerTimeout = setTimeout(function() {
-            markPartnerOffline();
-            addLog('SYSTEM', t().peerLeft);
-        }, 35000);
-        updateStatus();
-    }
-
     function markPartnerOffline() {
         partnerOnline = false;
-        clearTimeout(partnerTimeout);
+        currentRoom = null;
         document.getElementById('remote-dot').style.display = 'none';
         remoteLastCoords = null;
         document.getElementById('dist-val').innerText = t().offline;
         document.getElementById('nav-lat').innerText = '--';
         document.getElementById('nav-lng').innerText = '--';
+        document.getElementById('partner-id').disabled = false;
         updateStatus();
     }
 
     function sendMyData(isNew) {
-        if (myLastCoords && currentRoom) {
-            ntfyPublish(currentRoom, {
+        if (myLastCoords) {
+            sendData({
                 type: 'pos',
                 lat: myLastCoords.lat, lng: myLastCoords.lng,
                 name: myName, style: getMyStyle(), isNewPos: isNew
@@ -586,7 +478,7 @@
         if (!text || !currentRoom) return;
         input.value = '';
         appendChat(myName, text, true);
-        ntfyPublish(currentRoom, { type: 'chat', name: myName, text: text });
+        sendData({ type: 'chat', name: myName, text: text });
     }
 
     function appendChat(name, text, isMe) {
@@ -674,17 +566,41 @@
 
     // ===== Cleanup =====
     window.addEventListener('beforeunload', function() {
-        if (currentRoom) {
-            // Envio síncrono antes de fechar
-            navigator.sendBeacon(NTFY + '/' + currentRoom, JSON.stringify({ type: 'leave', id: myId }));
+        if (conn) conn.close();
+        if (peer) peer.destroy();
+    });
+
+    // ===== Init PeerJS =====
+    var peerId = 'tilemap-' + sessionId;
+    peer = new Peer(peerId, { debug: 0 });
+
+    peer.on('open', function(id) {
+        document.getElementById('my-session-id').value = sessionId;
+        addLog('SYSTEM', currentLang === 'pt' ? 'Sua sessão: ' + sessionId : 'Your session: ' + sessionId);
+        addLog('SYSTEM', t().connOk);
+    });
+
+    peer.on('connection', function(c) {
+        // Alguém conectou em nós
+        addLog('SYSTEM', t().peerJoined);
+        setupConnection(c);
+    });
+
+    peer.on('error', function(err) {
+        addLog('SYSTEM', 'PeerJS: ' + err.type);
+        if (err.type === 'peer-unavailable') {
+            addLog('SYSTEM', t().statusWaiting);
+            // Parceiro ainda não está online, tentar novamente em 3s
+            document.getElementById('partner-id').disabled = false;
+            document.getElementById('btn-connect').disabled = false;
+            currentRoom = null;
+            updateStatus();
         }
     });
 
-    // ===== Init =====
     document.getElementById('my-session-id').value = sessionId;
     changeLanguage();
-    addLog('SYSTEM', currentLang === 'pt' ? 'Sua sessão: ' + sessionId : 'Your session: ' + sessionId);
-    addLog('SYSTEM', currentLang === 'pt' ? 'Sistema pronto.' : 'System ready.');
+    addLog('SYSTEM', currentLang === 'pt' ? 'Conectando ao servidor...' : 'Connecting to server...');
 </script>
 </body>
 </html>
