@@ -349,7 +349,6 @@
     }
 
     // ===== Ntfy.sh - publicar mensagem via HTTPS POST =====
-    // ntfy.sh trata o body como texto plano por padrão
     function ntfyPublish(topic, data) {
         data.id = myId;
         fetch(NTFY + '/' + topic, {
@@ -360,32 +359,64 @@
         });
     }
 
-    // ===== Ntfy.sh - polling via JSON endpoint =====
+    // ===== Ntfy.sh - receber via SSE (EventSource) com fallback polling =====
+    var eventSource = null;
     var pollTimer = null;
     var lastPollTime = 0;
+    var currentTopic = null;
+    var messageHandler = null;
+
+    function handleEnvelope(envelope) {
+        if (!messageHandler) return;
+        try {
+            if (envelope.event === 'message' && envelope.message) {
+                var data = JSON.parse(envelope.message);
+                messageHandler(data);
+            }
+        } catch (ex) {}
+    }
+
+    function startSSE(topic, onMessage) {
+        messageHandler = onMessage;
+        currentTopic = topic;
+        var url = NTFY + '/' + topic + '/sse';
+        eventSource = new EventSource(url);
+
+        eventSource.addEventListener('message', function(e) {
+            try {
+                handleEnvelope(JSON.parse(e.data));
+            } catch (ex) {}
+        });
+
+        eventSource.addEventListener('error', function() {
+            // SSE falhou, cair para polling
+            if (eventSource) {
+                eventSource.close();
+                eventSource = null;
+                addLog('SYSTEM', 'SSE indisponivel, usando polling...');
+                startPolling(topic, onMessage);
+            }
+        });
+    }
 
     function startPolling(topic, onMessage) {
-        // Começar a receber mensagens a partir de agora (epoch seconds)
+        messageHandler = onMessage;
+        currentTopic = topic;
         lastPollTime = Math.floor(Date.now() / 1000);
 
         function poll() {
             if (!currentRoom) return;
-            var url = NTFY + '/' + topic + '/json?poll=1&since=' + lastPollTime;
-            fetch(url).then(function(r) {
+            fetch(NTFY + '/' + topic + '/json?poll=1&since=' + lastPollTime).then(function(r) {
                 if (!r.ok) throw new Error('HTTP ' + r.status);
                 return r.text();
             }).then(function(text) {
                 if (!text.trim()) return;
-                // ntfy retorna 1 JSON por linha (ndjson)
                 var lines = text.trim().split('\n');
                 for (var i = 0; i < lines.length; i++) {
                     try {
                         var envelope = JSON.parse(lines[i]);
-                        if (envelope.event === 'message' && envelope.message) {
-                            lastPollTime = envelope.time + 1;
-                            var data = JSON.parse(envelope.message);
-                            onMessage(data);
-                        }
+                        if (envelope.time) lastPollTime = envelope.time + 1;
+                        handleEnvelope(envelope);
                     } catch (ex) {}
                 }
             }).catch(function(e) {
@@ -393,13 +424,15 @@
             });
         }
 
-        // Poll a cada 1.5s
         poll();
-        pollTimer = setInterval(poll, 1500);
+        pollTimer = setInterval(poll, 2000);
     }
 
-    function stopPolling() {
+    function stopListening() {
+        if (eventSource) { eventSource.close(); eventSource = null; }
         if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+        messageHandler = null;
+        currentTopic = null;
     }
 
     // ===== Sala =====
@@ -417,57 +450,46 @@
 
         addLog('SYSTEM', t().roomJoined + name);
 
-        // Testar conectividade com ntfy.sh primeiro
-        fetch(NTFY + '/' + topic + '/json?poll=1&since=0', { method: 'GET' }).then(function(r) {
-            if (!r.ok) throw new Error('HTTP ' + r.status);
-            addLog('SYSTEM', t().connOk);
+        function onMsg(d) {
+            if (d.id === myId) return;
 
-            // Iniciar polling
-            startPolling(topic, function(d) {
-                if (d.id === myId) return;
+            if (d.type === 'join' || d.type === 'ping') {
+                if (!partnerOnline) addLog('SYSTEM', t().peerJoined);
+                markPartnerOnline();
+                if (d.type === 'join' && myLastCoords) sendMyData(true);
+            } else if (d.type === 'leave') {
+                markPartnerOffline();
+                addLog('SYSTEM', t().peerLeft);
+            } else if (d.type === 'pos') {
+                markPartnerOnline();
+                remoteLastCoords = { lat: d.lat, lng: d.lng };
+                renderPlayer('remote', d.lat, d.lng, d.name, d.style, d.isNewPos);
+                if (d.isNewPos) calculateTacticalNav();
+            } else if (d.type === 'chat') {
+                markPartnerOnline();
+                appendChat(d.name || '???', d.text, false);
+            }
+        }
 
-                if (d.type === 'join' || d.type === 'ping') {
-                    if (!partnerOnline) addLog('SYSTEM', t().peerJoined);
-                    markPartnerOnline();
-                    if (d.type === 'join' && myLastCoords) sendMyData(true);
-                } else if (d.type === 'leave') {
-                    markPartnerOffline();
-                    addLog('SYSTEM', t().peerLeft);
-                } else if (d.type === 'pos') {
-                    markPartnerOnline();
-                    remoteLastCoords = { lat: d.lat, lng: d.lng };
-                    renderPlayer('remote', d.lat, d.lng, d.name, d.style, d.isNewPos);
-                    if (d.isNewPos) calculateTacticalNav();
-                } else if (d.type === 'chat') {
-                    markPartnerOnline();
-                    appendChat(d.name || '???', d.text, false);
-                }
-            });
+        // Tentar SSE primeiro (1 conexão persistente), fallback para polling
+        startSSE(topic, onMsg);
 
-            // Anunciar entrada
-            ntfyPublish(topic, { type: 'join' });
+        // Anunciar entrada
+        ntfyPublish(topic, { type: 'join' });
 
-            // Ping a cada 8s
-            pingInterval = setInterval(function() {
-                ntfyPublish(topic, { type: 'ping' });
-            }, 8000);
+        // Ping a cada 15s (reduzido para economizar rate limit)
+        pingInterval = setInterval(function() {
+            ntfyPublish(topic, { type: 'ping' });
+        }, 15000);
 
-            if (myLastCoords) sendMyData(true);
-            updateStatus();
-        }).catch(function(e) {
-            addLog('SYSTEM', t().statusError + ' (' + e.message + ')');
-            document.getElementById('conn-status').textContent = t().statusError;
-            document.getElementById('conn-status').className = 'status-error';
-            currentRoom = null;
-            document.getElementById('room-id').disabled = false;
-            document.getElementById('btn-connect').disabled = false;
-        });
+        if (myLastCoords) sendMyData(true);
+        updateStatus();
     }
 
     function leaveRoom() {
         clearInterval(pingInterval);
         clearTimeout(partnerTimeout);
-        stopPolling();
+        stopListening();
 
         if (currentRoom) {
             ntfyPublish('theislemap-' + currentRoom, { type: 'leave' });
@@ -493,7 +515,7 @@
         partnerTimeout = setTimeout(function() {
             markPartnerOffline();
             addLog('SYSTEM', t().peerLeft);
-        }, 20000);
+        }, 35000);
         updateStatus();
     }
 
