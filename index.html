@@ -1,0 +1,566 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>The Isle Map</title>
+    <style>
+        :root {
+            --primary: #00ff00;
+            --danger: #ff4444;
+            --warning: #ffaa00;
+            --bg-dark: #0a0a0a;
+            --panel-bg: #161616;
+            --sidebar-width: 280px;
+        }
+        body, html {
+            margin: 0; padding: 0; height: 100%; width: 100%;
+            background: var(--bg-dark); color: white;
+            font-family: 'Segoe UI', sans-serif; overflow: hidden;
+        }
+        #name-overlay {
+            position: fixed; inset: 0; background: rgba(0,0,0,0.95);
+            display: flex; align-items: center; justify-content: center; z-index: 9999;
+        }
+        .name-box {
+            background: var(--panel-bg); padding: 40px; border-radius: 12px;
+            border: 2px solid var(--primary); text-align: center;
+        }
+        .name-box p { color: #aaa; font-size: 13px; margin: 10px 0 15px 0; }
+        #app-container { display: flex; height: 100vh; width: 100vw; }
+        #sidebar-left, #sidebar-right {
+            width: var(--sidebar-width); background: var(--panel-bg);
+            border: 1px solid #333; display: flex; flex-direction: column;
+            padding: 20px; box-sizing: border-box; z-index: 100;
+        }
+        #main-content {
+            flex-grow: 1; position: relative; background: #000;
+            overflow: hidden; cursor: grab;
+        }
+        #main-content:active { cursor: grabbing; }
+        #map-viewport {
+            width: 100%; height: 100%;
+            display: flex; align-items: center; justify-content: center;
+        }
+        #map-container {
+            position: relative; width: 1000px; height: 1000px;
+            background-image: url('https://i.ibb.co/hxCmG7Yg/gateway021.webp');
+            background-size: 1000px 1000px;
+            transform-origin: center center; will-change: transform;
+        }
+        #tracking-svg {
+            position: absolute; top: 0; left: 0; width: 1000px; height: 1000px;
+            pointer-events: none; z-index: 40; overflow: visible;
+        }
+        .path-line {
+            fill: none; stroke-width: 4; stroke-dasharray: 8, 6;
+            stroke-linejoin: round; stroke-linecap: round;
+        }
+        .player-dot {
+            position: absolute; border-radius: 50%;
+            transform: translate(-50%, -50%); z-index: 50;
+            background: #fff; border: 3px solid currentColor;
+            box-shadow: 0 0 15px currentColor; display: none;
+        }
+        .player-label {
+            position: absolute; bottom: 120%; left: 50%; transform: translateX(-50%);
+            background: #000; color: white; padding: 4px 10px; border-radius: 4px;
+            font-size: 11px; font-weight: bold; border: 1px solid currentColor;
+            white-space: nowrap; text-transform: uppercase;
+        }
+        .blink-anim { animation: pulse 1.5s infinite alternate; }
+        @keyframes pulse {
+            0% { filter: brightness(1); transform: translate(-50%, -50%) scale(1); }
+            100% { filter: brightness(1.8); transform: translate(-50%, -50%) scale(1.2); }
+        }
+        .menu-item { margin-bottom: 15px; border-bottom: 1px solid #222; padding-bottom: 10px; }
+        label { font-size: 11px; color: #888; display: block; margin-bottom: 5px; }
+        select, input[type="text"], button {
+            background: #222; border: 1px solid #444; color: white;
+            padding: 10px; border-radius: 4px; width: 100%; margin-top: 5px;
+            box-sizing: border-box;
+        }
+        button { cursor: pointer; border-color: var(--primary); color: var(--primary); font-weight: bold; }
+        button:disabled { opacity: 0.4; cursor: not-allowed; }
+        .connected-active { background: var(--primary) !important; color: #000 !important; }
+        #nav-panel { background: #000; padding: 10px; border: 1px solid #333; border-radius: 4px; margin-top: 5px; }
+        .nav-instruction { font-size: 13px; color: var(--primary); font-weight: bold; margin: 3px 0; display: block; }
+        .nav-dist { font-family: monospace; font-size: 16px; border-bottom: 1px solid #222; margin-bottom: 5px; display: block; }
+        #log-container { flex-grow: 1; overflow-y: auto; background: #0d0d0d; padding: 10px; font-family: monospace; font-size: 11px; border: 1px solid #333; }
+        .footer-credit {
+            margin-top: auto; text-align: center; font-size: 10px;
+            color: #555; padding-top: 10px; border-top: 1px solid #222;
+        }
+        #conn-status {
+            font-size: 10px; padding: 4px 8px; border-radius: 3px; text-align: center;
+            margin-top: 5px; font-family: monospace;
+        }
+        .status-waiting { background: #332200; color: var(--warning); border: 1px solid var(--warning); }
+        .status-ready { background: #002200; color: var(--primary); border: 1px solid var(--primary); }
+        .status-error { background: #220000; color: var(--danger); border: 1px solid var(--danger); }
+        .status-linked { background: var(--primary); color: #000; border: 1px solid var(--primary); font-weight: bold; }
+    </style>
+</head>
+<body>
+    <div id="name-overlay">
+        <div class="name-box">
+            <h2 id="lang-welcome" style="color: var(--primary); margin: 0;">The Isle Map</h2>
+            <p id="lang-welcome-hint">Digite seu nome para continuar:</p>
+            <input type="text" id="user-name-input" placeholder="..." maxlength="12">
+            <button id="lang-login-btn" onclick="setUserName()">ENTRAR</button>
+        </div>
+    </div>
+    <div id="app-container">
+        <div id="sidebar-left">
+            <div class="menu-item">
+                <label id="lang-label-lang">IDIOMA / LANGUAGE:</label>
+                <select id="language-select" onchange="changeLanguage()">
+                    <option value="pt" selected>Português (PT)</option>
+                    <option value="en">English (EN)</option>
+                </select>
+            </div>
+            <div class="menu-item">
+                <label id="lang-label-conn">CONEXÃO:</label>
+                <input type="text" id="room-id" placeholder="Ex: SALA1" maxlength="20" style="text-transform:uppercase;">
+                <button id="btn-connect" onclick="joinRoom()">ENTRAR NA SALA</button>
+                <div id="conn-status" class="status-ready">Pronto. Digite um nome de sala.</div>
+            </div>
+            <div class="menu-item">
+                <label id="lang-label-coord">COORDENADAS:</label>
+                <input type="text" id="coord-input" placeholder="0.0, 0.0">
+                <button id="lang-btn-send" onclick="updateMyLocation()">ENVIAR POSIÇÃO</button>
+            </div>
+            <div class="menu-item">
+                <label id="lang-label-nav">ORIENTAÇÃO TÁTICA:</label>
+                <div id="nav-panel">
+                    <span class="nav-dist" id="dist-val">OFFLINE</span>
+                    <span class="nav-instruction" id="nav-lat">--</span>
+                    <span class="nav-instruction" id="nav-lng">--</span>
+                </div>
+            </div>
+            <div class="menu-item" style="border:none;">
+                <label id="lang-label-style">ESTILO:</label>
+                <div style="display: flex; gap: 5px;">
+                    <input type="color" id="p-color" value="#00ff00" oninput="liveUpdate()" style="width: 50px; padding: 2px;">
+                    <input type="range" id="p-size" min="10" max="50" value="20" oninput="liveUpdate()">
+                </div>
+                <label style="display:flex; align-items:center; gap:8px; margin-top:10px; cursor:pointer; font-size:12px;">
+                    <input type="checkbox" id="p-blink" onchange="liveUpdate()" checked> <span id="lang-label-blink">Piscar</span>
+                </label>
+            </div>
+            <div class="footer-credit">Feito por Mirute</div>
+        </div>
+        <div id="main-content">
+            <div id="map-viewport">
+                <div id="map-container">
+                    <svg id="tracking-svg">
+                        <polyline id="local-path" class="path-line" points=""></polyline>
+                        <polyline id="remote-path" class="path-line" points=""></polyline>
+                    </svg>
+                    <div id="local-dot" class="player-dot"><span class="player-label" id="local-label">VOCÊ</span></div>
+                    <div id="remote-dot" class="player-dot"><span class="player-label" id="remote-label">...</span></div>
+                </div>
+            </div>
+        </div>
+        <div id="sidebar-right">
+            <h3 id="lang-label-log" style="font-size: 0.8em; color: var(--primary);">LOG</h3>
+            <div id="log-container"></div>
+            <button id="lang-btn-reset" onclick="resetPath()" style="font-size: 10px; border-color: #444; color: #888; margin-top: 10px;">LIMPAR RASTROS</button>
+        </div>
+    </div>
+<script>
+    // ===== Estado =====
+    var currentRoom = null;
+    var partnerOnline = false;
+    var partnerTimeout = null;
+    var pingInterval = null;
+    var myName = "", myLastCoords = null, remoteLastCoords = null;
+    var myPoints = [], remotePoints = [];
+    var currentLang = 'pt';
+    var MAP_LIMITS = { latTop: -618, latBottom: 616, lngLeft: -560, lngRight: 674 };
+    var myId = 'u' + Math.random().toString(36).substring(2, 10);
+    var NTFY = 'https://ntfy.sh';
+
+    // ===== i18n =====
+    var i18n = {
+        pt: {
+            welcome: "The Isle Map", welcomeHint: "Digite seu nome para continuar:",
+            loginBtn: "ENTRAR", labelLang: "IDIOMA:",
+            labelConn: "CONEXÃO:", btnJoin: "ENTRAR NA SALA", btnLeave: "SAIR DA SALA",
+            labelCoord: "COORDENADAS:", btnSend: "ENVIAR POSIÇÃO", labelNav: "ORIENTAÇÃO TÁTICA",
+            labelStyle: "ESTILO:", labelBlink: "Piscar Marcador", labelLog: "LOG TÁTICO",
+            btnReset: "LIMPAR RASTROS", offline: "OFFLINE", units: " UNIDADES",
+            latStable: "NÍVEL ESTÁVEL", latDown: "DESÇA MAIS (AMIGO ABAIXO)", latUp: "SUBA MAIS (AMIGO ACIMA)",
+            lngStable: "EIXO ALINHADO", lngRight: "VÁ PARA DIREITA", lngLeft: "VÁ PARA ESQUERDA",
+            you: "VOCÊ",
+            statusReady: "Pronto. Digite um nome de sala.",
+            statusWaiting: "Na sala. Aguardando parceiro...",
+            statusLinked: "Conectado com parceiro!",
+            statusError: "Erro de conexão.",
+            roomPlaceholder: "Ex: SALA1",
+            enterRoom: "Digite o nome da sala.",
+            roomJoined: "Entrou na sala: ",
+            peerJoined: "Parceiro na sala!",
+            peerLeft: "Parceiro saiu.",
+            leftRoom: "Saiu da sala.",
+            connOk: "Conectado ao servidor!",
+            connFail: "Falha na conexão. Tentando reconectar..."
+        },
+        en: {
+            welcome: "The Isle Map", welcomeHint: "Enter your name to continue:",
+            loginBtn: "ENTER", labelLang: "LANGUAGE:",
+            labelConn: "CONNECTION:", btnJoin: "JOIN ROOM", btnLeave: "LEAVE ROOM",
+            labelCoord: "COORDINATES:", btnSend: "SEND POSITION", labelNav: "TACTICAL GUIDANCE",
+            labelStyle: "STYLE:", labelBlink: "Blink Marker", labelLog: "TACTICAL LOG",
+            btnReset: "CLEAR TRACKS", offline: "OFFLINE", units: " UNITS",
+            latStable: "LEVEL STABLE", latDown: "GO DOWN (FRIEND BELOW)", latUp: "GO UP (FRIEND ABOVE)",
+            lngStable: "AXIS ALIGNED", lngRight: "GO RIGHT", lngLeft: "GO LEFT",
+            you: "YOU",
+            statusReady: "Ready. Enter a room name.",
+            statusWaiting: "In room. Waiting for partner...",
+            statusLinked: "Connected with partner!",
+            statusError: "Connection error.",
+            roomPlaceholder: "Ex: ROOM1",
+            enterRoom: "Enter a room name.",
+            roomJoined: "Joined room: ",
+            peerJoined: "Partner in room!",
+            peerLeft: "Partner left.",
+            leftRoom: "Left the room.",
+            connOk: "Connected to server!",
+            connFail: "Connection failed. Retrying..."
+        }
+    };
+
+    function t() { return i18n[currentLang]; }
+
+    // ===== Log =====
+    function addLog(u, m) {
+        var c = document.getElementById('log-container');
+        var d = document.createElement('div');
+        d.style.padding = "4px 0"; d.style.borderBottom = "1px solid #222";
+        d.innerHTML = '<b>' + u + ':</b> ' + m;
+        c.prepend(d);
+    }
+
+    // ===== Status =====
+    function updateStatus() {
+        var el = document.getElementById('conn-status');
+        var btn = document.getElementById('btn-connect');
+        if (currentRoom && partnerOnline) {
+            el.textContent = t().statusLinked;
+            el.className = 'status-linked';
+            btn.innerText = t().btnLeave;
+            btn.classList.add('connected-active');
+            btn.disabled = false;
+        } else if (currentRoom) {
+            el.textContent = t().statusWaiting;
+            el.className = 'status-waiting';
+            btn.innerText = t().btnLeave;
+            btn.classList.remove('connected-active');
+            btn.disabled = false;
+        } else {
+            el.textContent = t().statusReady;
+            el.className = 'status-ready';
+            btn.innerText = t().btnJoin;
+            btn.classList.remove('connected-active');
+            btn.disabled = false;
+        }
+    }
+
+    // ===== Idioma =====
+    function changeLanguage() {
+        currentLang = document.getElementById('language-select').value;
+        var l = t();
+        document.getElementById('lang-welcome').innerText = l.welcome;
+        document.getElementById('lang-welcome-hint').innerText = l.welcomeHint;
+        document.getElementById('lang-login-btn').innerText = l.loginBtn;
+        document.getElementById('lang-label-lang').innerText = l.labelLang;
+        document.getElementById('lang-label-conn').innerText = l.labelConn;
+        document.getElementById('lang-label-coord').innerText = l.labelCoord;
+        document.getElementById('lang-btn-send').innerText = l.btnSend;
+        document.getElementById('lang-label-nav').innerText = l.labelNav;
+        document.getElementById('lang-label-style').innerText = l.labelStyle;
+        document.getElementById('lang-label-blink').innerText = l.labelBlink;
+        document.getElementById('lang-label-log').innerText = l.labelLog;
+        document.getElementById('lang-btn-reset').innerText = l.btnReset;
+        document.getElementById('local-label').innerText = myName || l.you;
+        document.getElementById('room-id').placeholder = l.roomPlaceholder;
+        if (!remoteLastCoords) document.getElementById('dist-val').innerText = l.offline;
+        calculateTacticalNav();
+        updateStatus();
+    }
+
+    // ===== Zoom e Pan =====
+    var scale = 1, posX = 0, posY = 0;
+    var mapContainer = document.getElementById('map-container');
+    var mainContent = document.getElementById('main-content');
+    mainContent.addEventListener('wheel', function(e) {
+        e.preventDefault();
+        scale = Math.min(Math.max(0.2, scale + (e.deltaY > 0 ? -0.1 : 0.1)), 5);
+        updateTransform();
+    });
+    var isDragging = false, startX, startY;
+    mainContent.addEventListener('mousedown', function(e) { isDragging = true; startX = e.clientX - posX; startY = e.clientY - posY; });
+    window.addEventListener('mousemove', function(e) { if (isDragging) { posX = e.clientX - startX; posY = e.clientY - startY; updateTransform(); } });
+    window.addEventListener('mouseup', function() { isDragging = false; });
+    function updateTransform() { mapContainer.style.transform = 'translate(' + posX + 'px, ' + posY + 'px) scale(' + scale + ')'; }
+
+    // ===== Login =====
+    function setUserName() {
+        var val = document.getElementById('user-name-input').value;
+        myName = val.trim() ? val.toUpperCase() : t().you;
+        document.getElementById('local-label').innerText = myName;
+        document.getElementById('name-overlay').style.display = 'none';
+    }
+
+    // ===== Ntfy.sh - publicar mensagem via HTTPS POST =====
+    // ntfy.sh trata o body como texto plano por padrão
+    function ntfyPublish(topic, data) {
+        data.id = myId;
+        fetch(NTFY + '/' + topic, {
+            method: 'POST',
+            body: JSON.stringify(data)
+        }).catch(function(e) {
+            console.error('Publish error:', e);
+        });
+    }
+
+    // ===== Ntfy.sh - polling via JSON endpoint =====
+    var pollTimer = null;
+    var lastPollTime = 0;
+
+    function startPolling(topic, onMessage) {
+        // Começar a receber mensagens a partir de agora (epoch seconds)
+        lastPollTime = Math.floor(Date.now() / 1000);
+
+        function poll() {
+            if (!currentRoom) return;
+            var url = NTFY + '/' + topic + '/json?poll=1&since=' + lastPollTime;
+            fetch(url).then(function(r) {
+                if (!r.ok) throw new Error('HTTP ' + r.status);
+                return r.text();
+            }).then(function(text) {
+                if (!text.trim()) return;
+                // ntfy retorna 1 JSON por linha (ndjson)
+                var lines = text.trim().split('\n');
+                for (var i = 0; i < lines.length; i++) {
+                    try {
+                        var envelope = JSON.parse(lines[i]);
+                        if (envelope.event === 'message' && envelope.message) {
+                            lastPollTime = envelope.time + 1;
+                            var data = JSON.parse(envelope.message);
+                            onMessage(data);
+                        }
+                    } catch (ex) {}
+                }
+            }).catch(function(e) {
+                console.error('Poll error:', e);
+            });
+        }
+
+        // Poll a cada 1.5s
+        poll();
+        pollTimer = setInterval(poll, 1500);
+    }
+
+    function stopPolling() {
+        if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    }
+
+    // ===== Sala =====
+    function joinRoom() {
+        if (currentRoom) { leaveRoom(); return; }
+
+        var name = document.getElementById('room-id').value.trim().toUpperCase();
+        if (!name) { addLog('SYSTEM', t().enterRoom); return; }
+
+        currentRoom = name;
+        document.getElementById('room-id').disabled = true;
+        document.getElementById('btn-connect').disabled = true;
+
+        var topic = 'theislemap-' + name;
+
+        addLog('SYSTEM', t().roomJoined + name);
+
+        // Testar conectividade com ntfy.sh primeiro
+        fetch(NTFY + '/' + topic + '/json?poll=1&since=0', { method: 'GET' }).then(function(r) {
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            addLog('SYSTEM', t().connOk);
+
+            // Iniciar polling
+            startPolling(topic, function(d) {
+                if (d.id === myId) return;
+
+                if (d.type === 'join' || d.type === 'ping') {
+                    if (!partnerOnline) addLog('SYSTEM', t().peerJoined);
+                    markPartnerOnline();
+                    if (d.type === 'join' && myLastCoords) sendMyData(true);
+                } else if (d.type === 'leave') {
+                    markPartnerOffline();
+                    addLog('SYSTEM', t().peerLeft);
+                } else if (d.type === 'pos') {
+                    markPartnerOnline();
+                    remoteLastCoords = { lat: d.lat, lng: d.lng };
+                    renderPlayer('remote', d.lat, d.lng, d.name, d.style, d.isNewPos);
+                    if (d.isNewPos) calculateTacticalNav();
+                }
+            });
+
+            // Anunciar entrada
+            ntfyPublish(topic, { type: 'join' });
+
+            // Ping a cada 8s
+            pingInterval = setInterval(function() {
+                ntfyPublish(topic, { type: 'ping' });
+            }, 8000);
+
+            if (myLastCoords) sendMyData(true);
+            updateStatus();
+        }).catch(function(e) {
+            addLog('SYSTEM', t().statusError + ' (' + e.message + ')');
+            document.getElementById('conn-status').textContent = t().statusError;
+            document.getElementById('conn-status').className = 'status-error';
+            currentRoom = null;
+            document.getElementById('room-id').disabled = false;
+            document.getElementById('btn-connect').disabled = false;
+        });
+    }
+
+    function leaveRoom() {
+        clearInterval(pingInterval);
+        clearTimeout(partnerTimeout);
+        stopPolling();
+
+        if (currentRoom) {
+            ntfyPublish('theislemap-' + currentRoom, { type: 'leave' });
+        }
+
+        partnerOnline = false;
+        currentRoom = null;
+        document.getElementById('room-id').disabled = false;
+        document.getElementById('remote-dot').style.display = 'none';
+        remoteLastCoords = null;
+        document.getElementById('dist-val').innerText = t().offline;
+        document.getElementById('nav-lat').innerText = '--';
+        document.getElementById('nav-lng').innerText = '--';
+
+        addLog('SYSTEM', t().leftRoom);
+        updateStatus();
+    }
+
+    function markPartnerOnline() {
+        partnerOnline = true;
+        clearTimeout(partnerTimeout);
+        partnerTimeout = setTimeout(function() {
+            markPartnerOffline();
+            addLog('SYSTEM', t().peerLeft);
+        }, 20000);
+        updateStatus();
+    }
+
+    function markPartnerOffline() {
+        partnerOnline = false;
+        clearTimeout(partnerTimeout);
+        document.getElementById('remote-dot').style.display = 'none';
+        remoteLastCoords = null;
+        document.getElementById('dist-val').innerText = t().offline;
+        document.getElementById('nav-lat').innerText = '--';
+        document.getElementById('nav-lng').innerText = '--';
+        updateStatus();
+    }
+
+    function sendMyData(isNew) {
+        if (myLastCoords && currentRoom) {
+            ntfyPublish('theislemap-' + currentRoom, {
+                type: 'pos',
+                lat: myLastCoords.lat, lng: myLastCoords.lng,
+                name: myName, style: getMyStyle(), isNewPos: isNew
+            });
+        }
+    }
+
+    // ===== Coordenadas =====
+    function updateMyLocation() {
+        var raw = document.getElementById('coord-input').value;
+        var p = raw.split(',');
+        if (p.length >= 2) {
+            var lat = parseFloat(p[0].trim());
+            var lng = parseFloat(p[2] ? p[2].trim() : p[1].trim());
+            myLastCoords = { lat: lat, lng: lng };
+            renderPlayer('local', lat, lng, myName, getMyStyle(), true);
+            calculateTacticalNav();
+            sendMyData(true);
+            document.getElementById('coord-input').value = "";
+        }
+    }
+
+    function calculateTacticalNav() {
+        if (!myLastCoords || !remoteLastCoords) return;
+        var l = t();
+        var dist = Math.sqrt(Math.pow(myLastCoords.lng - remoteLastCoords.lng, 2) + Math.pow(myLastCoords.lat - remoteLastCoords.lat, 2));
+        document.getElementById('dist-val').innerText = dist.toFixed(1) + l.units;
+        var latDiff = remoteLastCoords.lat - myLastCoords.lat;
+        var lngDiff = remoteLastCoords.lng - myLastCoords.lng;
+        var latMsg = l.latStable, lngMsg = l.lngStable;
+        if (Math.abs(latDiff) > 0.5) latMsg = (latDiff > 0) ? l.latDown : l.latUp;
+        if (Math.abs(lngDiff) > 0.5) lngMsg = (lngDiff > 0) ? l.lngRight : l.lngLeft;
+        document.getElementById('nav-lat').innerText = latMsg;
+        document.getElementById('nav-lng').innerText = lngMsg;
+    }
+
+    // ===== Estilo =====
+    function liveUpdate() {
+        if (myLastCoords) {
+            renderPlayer('local', myLastCoords.lat, myLastCoords.lng, myName, getMyStyle(), false);
+            sendMyData(false);
+        }
+    }
+    function getMyStyle() {
+        return {
+            color: document.getElementById('p-color').value,
+            size: document.getElementById('p-size').value,
+            blink: document.getElementById('p-blink').checked
+        };
+    }
+
+    // ===== Renderização =====
+    function renderPlayer(type, lat, lng, name, style, isNew) {
+        var px = (lng - MAP_LIMITS.lngLeft) / (MAP_LIMITS.lngRight - MAP_LIMITS.lngLeft) * 1000;
+        var py = (lat - MAP_LIMITS.latTop) / (MAP_LIMITS.latBottom - MAP_LIMITS.latTop) * 1000;
+        var dot = document.getElementById(type + '-dot');
+        dot.style.display = 'block';
+        dot.style.left = px + 'px'; dot.style.top = py + 'px';
+        dot.style.color = style.color;
+        dot.style.width = style.size + 'px'; dot.style.height = style.size + 'px';
+        if (style.blink) dot.classList.add('blink-anim'); else dot.classList.remove('blink-anim');
+        document.getElementById(type + '-label').innerText = name;
+        if (isNew) {
+            var h = type === 'local' ? myPoints : remotePoints;
+            h.push(px + ',' + py);
+            document.getElementById(type + '-path').setAttribute('points', h.join(' '));
+            document.getElementById(type + '-path').style.stroke = style.color;
+            addLog(name, lat + ', ' + lng);
+        }
+    }
+
+    function resetPath() {
+        myPoints = []; remotePoints = [];
+        document.getElementById('local-path').setAttribute('points', '');
+        document.getElementById('remote-path').setAttribute('points', '');
+    }
+
+    // ===== Cleanup =====
+    window.addEventListener('beforeunload', function() {
+        if (currentRoom) {
+            // Envio síncrono antes de fechar
+            navigator.sendBeacon(NTFY + '/' + 'theislemap-' + currentRoom, JSON.stringify({ type: 'leave', id: myId }));
+        }
+    });
+
+    // ===== Init =====
+    changeLanguage();
+    addLog('SYSTEM', 'ID: ' + myId);
+    addLog('SYSTEM', currentLang === 'pt' ? 'Sistema pronto.' : 'System ready.');
+</script>
+</body>
+</html>
